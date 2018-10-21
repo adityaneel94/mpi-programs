@@ -1,121 +1,203 @@
-#include<stdio.h>
-#include<mpi.h>
-#define MAX 50
+#include <stdio.h>
+#include<stdlib.h>
+#include <mpi.h>
+#include <unistd.h>
 
-//The function checks if there is a cycle from curnode back to the node itself
-void dfs(int graph[MAX][MAX],int vis[MAX],int start,int curnode,int cycle_len,int *cnt,int V){
-    vis[curnode] = 1;
-    if(cycle_len == 0){
-        vis[curnode] = 0;
-        if(graph[curnode][start]){
-            *cnt = *cnt + 1;
-            return;
-        }
-        else
-            return;
-    }
-    for(int i = 0;i < V;++i){
-        if(!vis[i] && graph[curnode][i]){
-            dfs(graph,vis,start,i,cycle_len-1,cnt,V);
-        }
-    }
-    vis[curnode] = 0;
-}
+int main(int argc, char** argv) 
+{
+	int myrank, nprocs;
+	MPI_Init(&argc, &argv);
+	MPI_Comm_size(MPI_COMM_WORLD, &nprocs);
+	MPI_Comm_rank(MPI_COMM_WORLD, &myrank);
 
-int main(int argc, char** argv){
+	if (myrank == 0) 
+	{
+		int pairs;
+		scanf("%d",&pairs);
 
-	int numprocs,rank;
-    MPI_Init (&argc, &argv);
-    MPI_Comm_rank (MPI_COMM_WORLD, &rank);
-    MPI_Comm_size (MPI_COMM_WORLD, &numprocs);
-    MPI_Status status;
+		int dataToSend[1 + pairs * 2][pairs];
+		int i, j;
 
-    int graph[MAX][MAX] = {0};
-	int vis[MAX] = {0};
-	int tag1 = 5, tag2 = 10;
-	int totalCycles = 0;
+		for(i = 1; i <= 2 * pairs;i++)
+		{
+			for(j = 0; j < pairs; j++)
+			{
+				scanf("%d",&dataToSend[i][j]);
+			}
+		}
 
-    if(rank == 0){
-    	int V,e;
-    	int n = 4;
-	    scanf("%d %d",&V,&e);
-	    
-	    //populate the graph
-	    int s,d;
-	    for(int i = 0;i < e;i++){
-	        scanf("%d %d",&s,&d);
-	        graph[s][d] = 1;
-	        graph[d][s] = 1;
-	    }
-	    
-	    int nodesPerProcess = (V-(n-1))/(numprocs-1);
-        int leftOverNodes = (V-(n-1)) % (numprocs - 1);
+		// 1 : MALE
+		// 2 : FEMALE
 
-        int lower_bound = 0,upper_bound = nodesPerProcess - 1;
-        
-        if(leftOverNodes != 0){
-            upper_bound = leftOverNodes - 1;
+		for(i = 1; i <= 2 * pairs; i++)
+		{
+			// send number of pairs
+			MPI_Send(&pairs, 1, MPI_INT, i, i, MPI_COMM_WORLD);
+			// prefrence list
+			MPI_Send(dataToSend[i], pairs, MPI_INT, i, i, MPI_COMM_WORLD);
+		}
 
-            //Offset nodes' cycles will be calculated by the master process
-            int cnt = 0;
-            for(int node = lower_bound; node <= upper_bound; ++node){
-                dfs(graph,vis,node,node,n-1,&cnt,V);
-                vis[node] = 1;
-            }
-            totalCycles += cnt;
+		int marriages[2 * pairs + 1];
 
-            lower_bound = leftOverNodes;
-            upper_bound += nodesPerProcess;
-        }
+		for(i = 1; i <= 2 * pairs; i++)
+			marriages[i] = 0;
 
-        for(int dest = 1;dest < numprocs;dest++){
-            MPI_Send(&lower_bound, 1, MPI_INT, dest, tag1, MPI_COMM_WORLD);
-            MPI_Send(&upper_bound, 1, MPI_INT, dest, tag1 + 1, MPI_COMM_WORLD);
-            MPI_Send(&V, 1, MPI_INT, dest, tag1 + 2, MPI_COMM_WORLD);
-            MPI_Send(&n, 1, MPI_INT, dest, tag1 + 3, MPI_COMM_WORLD);
-            lower_bound = upper_bound + 1;
-            upper_bound +=  nodesPerProcess;
-        }
-    }
+		while(1)
+		{
+			int all_marriages_done = 1;
+			for(i = 1; i  <= 2 * pairs; i++)
+			{
+				if(marriages[i] == 0)
+				{
+					all_marriages_done = 0;
+					break;
+				}
+			}
+			if(all_marriages_done == 1)
+			{
+				printf("\n ALL MARRIAGE DONE \n");
+				for(i = 1; i <= pairs;i++)
+				{
+					printf("\n%d %d",i-1, marriages[i] - pairs - 1);
+				}
+				exit(0);
+				break;
+			}
+			else
+			{
+				int data[2];
+				MPI_Recv(data, 2, MPI_INT, MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+				marriages[data[0]] = data[1];
+				marriages[data[1]] = data[0];
+			}
+		}
+	} 
+	else
+	{
+		int pairs;
+		MPI_Recv(&pairs, 1, MPI_INT, 0, myrank, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+		
+		int order[pairs];
+		MPI_Recv(order, pairs, MPI_INT, 0, myrank, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 
-    //Broadcast the graph and visited array to all the nodes
-    MPI_Bcast(&graph, MAX * MAX, MPI_INT, 0, MPI_COMM_WORLD);
-    MPI_Bcast(&vis,MAX,MPI_INT,0,MPI_COMM_WORLD);
+		int i;
+		int currently_assigned = 0;
+		int rejected_from[2 * pairs + 1];
+		for(i = 1; i <= 2 * pairs; i++)
+			rejected_from[i] = 0;
 
-    //Slave process
-    if(rank > 0){
+		// male
+		if(myrank <= pairs)
+		{
+			while(1)
+			{
+				if(currently_assigned == 0)
+				{
+					for(i = 0; i < pairs; i++)
+					{		
+						// pick female not rejected from
+						if(rejected_from[pairs + 1 + order[i]] == 0)
+						{		
+							printf("\n process %d sending proposal to %d",myrank, pairs + 1 + order[i]);
 
-        //Recieve respective parameters from the master process
-        int lower_bound,upper_bound,V,n;
-        MPI_Recv(&lower_bound, 1, MPI_INT, 0, tag1, MPI_COMM_WORLD, &status);
-        MPI_Recv(&upper_bound, 1, MPI_INT, 0, tag1 + 1, MPI_COMM_WORLD, &status);
-        MPI_Recv(&V, 1, MPI_INT, 0, tag1 + 2, MPI_COMM_WORLD, &status);
-        MPI_Recv(&n, 1, MPI_INT, 0, tag1 + 3, MPI_COMM_WORLD, &status);
-        int localWalks = 0;
+							// send proposal
+							MPI_Send(&myrank, 1, MPI_INT, pairs + 1+ order[i], pairs + 1+ order[i], MPI_COMM_WORLD);
 
-        //Calculate cycles starting from 'node' in the given range
-        int cnt = 0;
-        for(int node = lower_bound;node <= upper_bound;node++){
-            dfs(graph,vis,node,node,n-1,&cnt,V);
-            vis[node] = 1;
-        }  
-     
-        //Send total cycles calculated by the slave to the master
-        MPI_Send(&cnt, 1, MPI_INT, 0, tag2, MPI_COMM_WORLD);
-    }
-    
-    //Master
-    if(rank == 0){
+							int status;
+							MPI_Recv(&status, 1, MPI_INT, pairs + 1 + order[i], pairs + 1 + order[i], MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+							if(status == 1)
+							{
+								printf("\n %d process got staus = %d from process %d",myrank, status, pairs + 1 + order[i]);
+								currently_assigned = pairs + 1 + order[i];
+								break;
+							}
+							else
+							{
+								rejected_from[pairs + 1 + order[i]] = 1;
+								printf("\n %d process got staus = %d from process %d",myrank, status, pairs + 1 + order[i]);
+							}
+						}
+					}
+				}
+				else
+				{
+					// listen for breakup
+					int status;
+					MPI_Recv(&status, 1, MPI_INT, currently_assigned, currently_assigned, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 
-        //Recieve cycle counts from respective slaves
-        int x;
-        for(int src = 1;src < numprocs;++src){
-            MPI_Recv(&x, 1, MPI_INT, src, tag2, MPI_COMM_WORLD, &status);
-            totalCycles += x;
-        }
-        printf("%d\n",totalCycles/2);
-    }
+					printf("\n %d process got breakup from %d",myrank, currently_assigned);
+					currently_assigned = 0;
+					rejected_from[currently_assigned] = 1;
+				}
+			}
+		}
+		else // female
+		{
+			while(1)
+			{
+				// listen for proposal
+				int male;
+				MPI_Recv(&male, 1, MPI_INT, MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 
-    MPI_Finalize();
-    return 0;
+				printf("\n %d process got proposal from %d process",myrank, male);
+
+				printf("\n currently assigned for female process %d = %d",myrank, currently_assigned);
+			
+				if(currently_assigned == 0)
+				{
+					currently_assigned = male;
+					int status = 1;
+					
+					// accept proposal
+					MPI_Send(&status, 1, MPI_INT, male, myrank, MPI_COMM_WORLD);
+					printf("\n female %d assigning to %d ",myrank, male);
+					int data[2];
+					data[0] = male;
+					data[1] = myrank;
+					MPI_Send(data, 2, MPI_INT, 0, myrank, MPI_COMM_WORLD);
+				}
+				else
+				{
+					printf("\n for female %d, there is conflict",myrank);
+					int pos1, pos2;
+					for(i = 0; i < pairs; i++)
+						if(order[i] == currently_assigned - 1)
+							pos1 = i;
+				
+					for(i = 0; i < pairs; i++)
+						if(order[i] == male - 1)
+							pos2 = i;
+
+					printf("\n for process %d , currently assigned pos1 = %d, new req pos2 = %d",myrank, pos1, pos2);
+
+
+					if(pos1 < pos2)
+					{
+						// send reject to male
+						int status = 0;
+						MPI_Send(&status, 1, MPI_INT, male, myrank, MPI_COMM_WORLD);
+						printf("\n female %d rejecting %d",myrank, male);
+					}	
+					else
+					{
+						// accept this and reject currently assigned
+						int status = 1;
+						MPI_Send(&status, 1, MPI_INT, male, myrank, MPI_COMM_WORLD);
+						printf("\n female %d accepting %d",myrank, male);
+						int data[2];
+						data[0] = male;
+						data[1] = myrank;
+						MPI_Send(data, 2, MPI_INT, 0, myrank, MPI_COMM_WORLD);
+						status = 0;
+						MPI_Send(&status, 1, MPI_INT, currently_assigned, myrank, MPI_COMM_WORLD);
+						printf("\n female %d rejecting %d",myrank, currently_assigned);
+						currently_assigned = male;
+					}
+				}
+			} // while true
+		} // else female
+	} // else
+
+	MPI_Finalize();
+	return 0;
 }
